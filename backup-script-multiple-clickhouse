@@ -1,0 +1,57 @@
+#!/bin/bash
+
+# ===== CONFIGURATION =====
+DB_HOST="localhost"
+DB_USER="default"
+DB_PASSWORD="I11TestRoots"
+
+# List all databases you want to back up
+DATABASES=("fusion_suite" "entF8989F91664E4040A705BC4710A61C50") 
+
+BACKUP_BASE_DIR="/var/www/clickhouse_backups"
+TIMESTAMP=$(date +%F_%H-%M-%S)
+
+# ===== CREATE BASE BACKUP DIRECTORY =====
+mkdir -p "$BACKUP_BASE_DIR"
+
+echo "Starting full backup for multiple databases..."
+echo "Backup base folder: $BACKUP_BASE_DIR"
+
+# ===== LOOP THROUGH EACH DATABASE =====
+for DATABASE in "${DATABASES[@]}"; do
+    BACKUP_DIR="$BACKUP_BASE_DIR/${DATABASE}_$TIMESTAMP"
+    mkdir -p "$BACKUP_DIR"
+    
+    echo "Backing up database: $DATABASE"
+    echo "Backup folder: $BACKUP_DIR"
+    
+    # Get all tables in the current database
+    TABLES=$(clickhouse-client \
+        --host="$DB_HOST" \
+        --user="$DB_USER" \
+        --password="$DB_PASSWORD" \
+        --query="SHOW TABLES FROM $DATABASE")
+    
+    # Export each table
+    for table in $TABLES; do
+        echo "Exporting table: $table"
+        
+        clickhouse-client \
+            --host="$DB_HOST" \
+            --user="$DB_USER" \
+            --password="$DB_PASSWORD" \
+            --query="SELECT * FROM $DATABASE.$table FORMAT CSVWithNames" \
+            > "$BACKUP_DIR/$table.csv"
+        
+        if [ $? -eq 0 ]; then
+            echo "✔ $table exported successfully"
+        else
+            echo "✘ Error exporting $table"
+        fi
+    done
+    
+    echo "Database $DATABASE backup completed."
+    echo "--------------------------------------"
+done
+
+echo "All database backups completed successfully!"

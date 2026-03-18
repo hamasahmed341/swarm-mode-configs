@@ -1,0 +1,136 @@
+version: "3.8"
+
+services:
+  mariadb:
+    image: mariadb:11
+    volumes:
+      - /var/www/docker-swarm-mode/saas-prod/data/mariadb:/var/lib/mysql # need to add the paths when prod server moved
+      - /var/www/docker-swarm-mode/saas-prod/db-init/mariadb:/docker-entrypoint-initdb.d:ro # need to add the paths when prod server moved
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+    networks:
+      - backend_net
+    deploy:
+      # resources:
+      #   limits:
+      #     cpus: "1.5"
+      #     memory: 6G
+      #   reservations:
+      #     cpus: "0.5"
+      #     memory: 2G
+    command:
+      - --innodb-buffer-pool-size=4G
+      - --innodb-log-file-size=512M
+      - --max-connections=200
+      - --innodb-log-buffer-size=16M
+      - --innodb-flush-log-at-trx-commit=2
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    volumes:
+      - /var/www/docker-swarm-mode/saas-prod/data/clickhouse:/var/lib/clickhouse # need to add the paths when prod server moved
+    networks:
+      - backend_net
+    environment:
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=dev2
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    user: "101:101"
+    command:
+      - /usr/bin/clickhouse-server
+      - --
+      - --async_insert=1
+      - --wait_for_async_insert=1
+      - --async_insert_max_data_size=10000000
+      - --async_insert_busy_timeout_ms=10000
+    deploy:
+      # resources:
+      #   limits:
+      #     cpus: "4.0"
+      #     memory: 4G
+      #   reservations:
+      #     cpus: "1.0"
+      #     memory: 2G
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  mongodb:
+    image: mongo:7.0
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=dev
+    command:
+      - mongod
+      - --wiredTigerCacheSizeGB=2
+      - --bind_ip_all
+    volumes:
+      - /var/www/docker-swarm-mode/saas-prod/data/mongo:/data/db      # need to add the paths when prod server moved
+    networks:
+      - backend_net
+    deploy:
+      # resources:
+      #   limits:
+      #     memory: 4G
+      #   reservations:
+      #     memory: 1G
+      restart_policy:
+        condition: on-failure
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis_cache:
+    image: redis:7-alpine
+    networks: 
+    - backend_net
+    ports:
+      - "6379:6379" # optional if you want host access
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    command:
+    - redis-server
+    - --maxmemory
+    - 1536mb
+    - --maxmemory-policy
+    - allkeys-lru
+    - --save
+    - ""
+    - --appendonly
+    - yes
+
+  identity-management:
+    image: o3webmaster/app-service-identity:swarm-mode
+    environment:
+      - DB_HOST=mariadb
+      - MONGO_URI=mongodb://mongodb:27017/identity
+      - REDIS_HOST=redis_cache
+      - CLICKHOUSE_HOST=clickhouse
+      - NODE_ENV=development
+    command: ["node", "server.js"]
+    ports:
+      - "8005:8005"
+    networks:
+      - backend_net
+    deploy:
+      replicas: 2
+
+networks:
+  frontend_net:
+    driver: overlay
+    external: true
+  backend_net:
+    driver: overlay
+    external: true

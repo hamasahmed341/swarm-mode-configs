@@ -1,0 +1,197 @@
+# #!/bin/bash
+
+# # ===== CONFIGURATION =====
+# CONTAINER_NAME="clickhouse"
+# DB_USER="admin"
+# DB_PASSWORD="I11TestRoots"
+# DATABASE="fusion_suite"
+# BACKUP_DIR="/clickhouse_2026-02-11"   # Folder containing CSV files
+
+# echo "Starting full database import..."
+# echo "Database: $DATABASE"
+# echo "Source folder: $BACKUP_DIR"
+
+# # ===== CHECK IF DIRECTORY EXISTS =====
+# if [ ! -d "$BACKUP_DIR" ]; then
+#     echo "✘ Backup directory does not exist!"
+#     exit 1
+# fi
+
+# # ===== LOOP THROUGH ALL CSV FILES =====
+# for file in $BACKUP_DIR/*.csv; do
+
+#     # Extract table name from filename
+#     table=$(basename "$file" .csv)
+
+#     echo "Importing table: $table"
+
+#     # Copy file into container temporary path
+#     docker cp "$file" $CONTAINER_NAME:/tmp/$table.csv
+
+#     # Import data
+#     docker exec -i $CONTAINER_NAME clickhouse-client \
+#         --user="$DB_USER" \
+#         --password="$DB_PASSWORD" \
+#         --query="INSERT INTO $DATABASE.$table FORMAT CSVWithNames" \
+#         < "$file"
+
+#     if [ $? -eq 0 ]; then
+#         echo "✔ $table imported successfully"
+#     else
+#         echo "✘ Error importing $table"
+#     fi
+
+# done
+
+# echo "Full database import completed."
+
+
+
+# #!/bin/bash
+
+# # ===== CONFIGURATION =====
+# DB_USER="admin"
+# DB_PASSWORD="I11TestRoots"
+# DATABASE="entF8989F91664E4040A705BC4710A61C50"
+# BACKUP_DIR="/tmp/clickhouse_2026-02-11_16-00-35"   # Folder containing CSV files inside the container
+
+# echo "Starting full database import..."
+# echo "Database: $DATABASE"
+# echo "Source folder: $BACKUP_DIR"
+
+# # ===== CHECK IF DIRECTORY EXISTS =====
+# if [ ! -d "$BACKUP_DIR" ]; then
+#     echo "✘ Backup directory does not exist!"
+#     exit 1
+# fi
+
+# # ===== LOOP THROUGH ALL CSV FILES =====
+# for file in "$BACKUP_DIR"/*.csv; do
+
+#     # Extract table name from filename
+#     table=$(basename "$file" .csv)
+
+#     echo "Importing table: $table"
+
+#     # Import data directly
+#     clickhouse-client \
+#         --user="$DB_USER" \
+#         --password="$DB_PASSWORD" \
+#         --query="INSERT INTO $DATABASE.$table FORMAT CSVWithNames" \
+#         < "$file"
+
+#     if [ $? -eq 0 ]; then
+#         echo "✔ $table imported successfully"
+#     else
+#         echo "✘ Error importing $table"
+#     fi
+
+# done
+
+# echo "Full database import completed."
+
+
+
+#!/bin/bash
+
+# ===== CONFIGURATION =====
+DB_USER="admin"
+DB_PASSWORD="I11TestRoots"
+DATABASE="fusion_suite"
+BACKUP_DIR="/tmp/clickhouse"   # Folder containing CSV files inside the container
+
+echo "Starting full database import..."
+echo "Database: $DATABASE"
+echo "Source folder: $BACKUP_DIR"
+
+# ===== CHECK IF DIRECTORY EXISTS =====
+if [ ! -d "$BACKUP_DIR" ]; then
+    echo "✘ Backup directory does not exist!"
+    exit 1
+fi
+
+# ===== CHECK IF DATABASE EXISTS =====
+db_exists=$(clickhouse-client \
+    --user="$DB_USER" \
+    --password="$DB_PASSWORD" \
+    --query="EXISTS DATABASE $DATABASE")
+
+if [ "$db_exists" -eq 0 ]; then
+    echo "Database $DATABASE does not exist. Creating database..."
+    clickhouse-client \
+        --user="$DB_USER" \
+        --password="$DB_PASSWORD" \
+        --query="CREATE DATABASE $DATABASE"
+
+    if [ $? -eq 0 ]; then
+        echo "✔ Database $DATABASE created successfully"
+    else
+        echo "✘ Error creating database $DATABASE"
+        exit 1
+    fi
+else
+    echo "Database $DATABASE already exists. Skipping creation."
+fi
+
+# ===== LOOP THROUGH ALL CSV FILES =====
+for file in "$BACKUP_DIR"/*.csv; do
+
+    # Extract table name from filename
+    table=$(basename "$file" .csv)
+
+    echo "Processing table: $table"
+
+    # Check if table exists
+    table_exists=$(clickhouse-client \
+        --user="$DB_USER" \
+        --password="$DB_PASSWORD" \
+        --query="EXISTS $DATABASE.$table")
+
+    if [ "$table_exists" -eq 0 ]; then
+        echo "Table $table does not exist. Creating table..."
+
+        # Read header line from CSV
+        header=$(head -n 1 "$file")
+
+        # Generate columns with String type (simple approach)
+        columns=""
+        IFS=',' read -ra cols <<< "$header"
+        for col in "${cols[@]}"; do
+            col_clean=$(echo "$col" | tr -d ' ')
+            columns+="$col_clean String,"
+        done
+        columns=${columns%,}  # remove trailing comma
+
+        # Create table
+        clickhouse-client \
+            --user="$DB_USER" \
+            --password="$DB_PASSWORD" \
+            --query="CREATE TABLE $DATABASE.$table ($columns) ENGINE = MergeTree() ORDER BY tuple()"
+
+        if [ $? -eq 0 ]; then
+            echo "✔ Table $table created successfully"
+        else
+            echo "✘ Error creating table $table"
+            continue
+        fi
+    else
+        echo "Table $table exists. Skipping creation."
+    fi
+
+    # Import data
+    echo "Importing data into $table..."
+    clickhouse-client \
+        --user="$DB_USER" \
+        --password="$DB_PASSWORD" \
+        --query="INSERT INTO $DATABASE.$table FORMAT CSVWithNames" \
+        < "$file"
+
+    if [ $? -eq 0 ]; then
+        echo "✔ $table imported successfully"
+    else
+        echo "✘ Error importing $table"
+    fi
+
+done
+
+echo "Full database import completed."

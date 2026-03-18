@@ -1,0 +1,43 @@
+#!/bin/bash
+
+# ===== CONFIGURATION =====
+DB_HOST="localhost"
+DB_USER="default"
+DB_PASSWORD="I11TestRoots"
+DATABASE="fusion_suite"
+# DATABASE="entF8989F91664E4040A705BC4710A61C50"
+BACKUP_DIR="/var/www/clickhouse_$(date +%F_%H-%M-%S)"
+
+# ===== CREATE BACKUP DIRECTORY =====
+mkdir -p "$BACKUP_DIR"
+
+echo "Starting full database export..."
+echo "Database: $DATABASE"
+echo "Backup folder: $BACKUP_DIR"
+
+# ===== GET ALL TABLES =====
+TABLES=$(clickhouse-client \
+    --host="$DB_HOST" \
+    --user="$DB_USER" \
+    --password="$DB_PASSWORD" \
+    --query="SHOW TABLES FROM $DATABASE")
+
+# ===== EXPORT EACH TABLE =====
+for table in $TABLES; do
+    echo "Exporting table: $table"
+
+    clickhouse-client \
+        --host="$DB_HOST" \
+        --user="$DB_USER" \
+        --password="$DB_PASSWORD" \
+        --query="SELECT * FROM $DATABASE.$table FORMAT CSVWithNames" \
+        > "$BACKUP_DIR/$table.csv"
+
+    if [ $? -eq 0 ]; then
+        echo "✔ $table exported successfully"
+    else
+        echo "✘ Error exporting $table"
+    fi
+done
+
+echo "Full database export completed."

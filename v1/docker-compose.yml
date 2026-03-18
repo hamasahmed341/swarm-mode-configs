@@ -1,0 +1,89 @@
+version: "3.8"
+
+services:
+  mariadb:
+    image: mariadb:11
+    volumes:
+      - /var/www/docker-swarm-mode/saas-prod/data/mariadb:/var/lib/mysql # need to add the paths when prod server moved
+      - /var/www/docker-swarm-mode/saas-prod/db-init/mariadb:/docker-entrypoint-initdb.d:ro # need to add the paths when prod server moved
+    environment:
+      MYSQL_ROOT_PASSWORD: I11TestRoots
+    networks:
+      - backend_net
+    deploy:
+      # resources:
+      #   limits:
+      #     cpus: "1.5"
+      #     memory: 6G
+      #   reservations:
+      #     cpus: "0.5"
+      #     memory: 2G
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 10
+
+    command:
+      - --innodb-buffer-pool-size=4G
+      - --innodb-log-file-size=512M
+      - --max-connections=200
+      - --innodb-log-buffer-size=16M
+      - --innodb-flush-log-at-trx-commit=2
+      
+  mongodb:
+    image: mongo:7.0
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=dev
+    command:
+      - mongod
+      - --wiredTigerCacheSizeGB=2
+      - --bind_ip_all
+    volumes:
+      - /var/www/docker-swarm-mode/saas-prod/data/mongo:/data/db # need to add the paths when prod server moved
+    networks:
+      - backend_net
+    deploy:
+      # resources:
+      #   limits:
+      #     memory: 4G
+      #   reservations:
+      #     memory: 1G
+      restart_policy:
+        condition: on-failure
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    # image: clickhouse/clickhouse-server:22.2.2.1
+    user: "101:101"
+    volumes:
+      - /Users/hammasahmad/docker-clickhouse:/tmp/clickhouse
+      # - /var/www/docker-swarm-mode/saas-prod/data/clickhouse:/var/lib/clickhouse # need to add the paths when prod server moved
+    networks:
+      - backend_net
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: I11TestRoots
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+networks:
+  backend_net:
+    driver: overlay
+    # internal: true
+    external: true

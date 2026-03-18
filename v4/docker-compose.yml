@@ -1,0 +1,582 @@
+version: "3.8"
+
+services:
+  # nginx:
+  #   image: nginx:alpine
+  #   ports:
+  #     # - target: 80
+  #     #   published: 8080
+  #     #   protocol: tcp
+  #       # mode: host
+  #     - target: 443
+  #       published: 443
+  #       protocol: tcp
+  #       # mode: host
+  #   volumes:
+  #     - /var/www/docker-swarm-mode/saas-prod/nginx/conf.d:/etc/nginx/conf.d
+  #     - /var/www/docker-swarm-mode/saas-prod/nginx/logs:/var/log/nginx
+  #     # - /var/www/docker-swarm-mode/saas-prod/certbot/conf:/etc/letsencrypt:ro
+  #     # - /var/www/docker-swarm-mode/saas-prod/certbot/www:/var/www/certbot:ro
+  #   networks:
+  #     - frontend_net
+  #     - backend_net
+  #   deploy:
+  #     replicas: 3
+  #     placement:
+  #       constraints:
+  #         - node.role == manager
+  #     restart_policy:
+  #       condition: any
+  #       delay: 5s
+  #       max_attempts: 5
+
+  mariadb:
+    image: mariadb:11
+    volumes:
+      - /var/www/docker-swarm-mode/saas-prod/data/mariadb:/var/lib/mysql # need to add the paths when prod server moved
+      - /var/www/docker-swarm-mode/saas-prod/db-init/mariadb:/docker-entrypoint-initdb.d:ro # need to add the paths when prod server moved
+    environment:
+      MYSQL_ROOT_PASSWORD: I11TestRoots
+    networks:
+      - backend_net
+    deploy:
+      # resources:
+      #   limits:
+      #     cpus: "1.5"
+      #     memory: 6G
+      #   reservations:
+      #     cpus: "0.5"
+      #     memory: 2G
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 10
+
+    command:
+      - --innodb-buffer-pool-size=4G
+      - --innodb-log-file-size=512M
+      - --max-connections=200
+      - --innodb-log-buffer-size=16M
+      - --innodb-flush-log-at-trx-commit=2
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      # - "15672:15672"
+    networks:
+      - backend_net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    # image: clickhouse/clickhouse-server:22.2.2.1
+    user: "101:101"
+    volumes:
+      - /var/www/docker-swarm-mode/saas-prod/data/clickhouse:/var/lib/clickhouse # need to add the paths when prod server moved
+    networks:
+      - backend_net
+    environment:
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD: I11TestRoots
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  mongodb:
+    image: mongo:7.0
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=dev
+    command:
+      - mongod
+      - --wiredTigerCacheSizeGB=2
+      - --bind_ip_all
+    volumes:
+      - /var/www/docker-swarm-mode/saas-prod/data/mongo:/data/db # need to add the paths when prod server moved
+    networks:
+      - backend_net
+    deploy:
+      # resources:
+      #   limits:
+      #     memory: 4G
+      #   reservations:
+      #     memory: 1G
+      restart_policy:
+        condition: on-failure
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis_cache:
+    image: redis:7-alpine
+    networks:
+      - backend_net
+    ports:
+      - "6379:6379" # optional if you want host access
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    command:
+      - redis-server
+      - --maxmemory
+      - 1536mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --save
+      - ""
+      - --appendonly
+      - yes
+
+  identity-management:
+    image: o3webmaster/app-service-identity:swarm-mode
+    environment:
+      # Node
+      - NODE_ENV=development
+      - APP_SRC_PATH=/api/v1
+
+      # MariaDB (CRITICAL FIX)
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=I11TestRoots
+      - DB_NAME=fiv2_general
+
+      # Redis
+      - REDIS_HOST=redis_cache
+      # - REDIS_PORT=6379
+
+      # ClickHouse (CRITICAL FIX)
+      - CLICKHOUSE_HOST=http://clickhouse:8123
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=I11TestRoots
+
+      # MongoDB
+      - MONGO_URI=mongodb://mongodb:27017/fusion_suite?authSource=admin
+    command: ["node", "server.js"]
+    ports:
+      - "8005:8005"
+    networks:
+      - backend_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 7s
+        max_attempts: 20
+
+  sdk-service-client-handshake:
+    image: o3webmaster/sdk-service-client-handshake:swarm-mode
+    environment:
+      # Node
+      - NODE_ENV=development
+      - APP_SRC_PATH=/api/v1
+
+      # MariaDB (CRITICAL FIX)
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=I11TestRoots
+      - DB_NAME=fiv2_general
+
+      - RMQHOST=rabbitmq
+      - RMQPORT=5672
+      - RMQUSERNAME=guest
+      - RMQPASSWORD=guest
+
+      # Redis
+      - REDIS_HOST=redis_cache
+      # - REDIS_PORT=6379
+
+      # ClickHouse (CRITICAL FIX)
+      - CLICKHOUSE_HOST=http://clickhouse:8123
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=I11TestRoots
+
+      # MongoDB
+      - MONGO_URI=mongodb://mongodb:27017/fusion_suite?authSource=admin
+    command: ["node", "server.js"]
+    ports:
+      - "8000:8000"
+    networks:
+      - backend_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 7s
+        max_attempts: 20
+  
+  sdk-service-bugs:
+    image: o3webmaster/sdk-service-bugs:swarm-mode
+    environment:
+      # Node
+      - NODE_ENV=development
+      - APP_SRC_PATH=/api/v1
+
+      # MariaDB (CRITICAL FIX)
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=I11TestRoots
+      - DB_NAME=fiv2_general
+
+
+      - RMQHOST=rabbitmq
+      - RMQPORT=5672
+      - RMQUSERNAME=guest
+      - RMQPASSWORD=guest
+      # Redis
+      - REDIS_HOST=redis_cache
+      # - REDIS_PORT=6379
+
+      # ClickHouse (CRITICAL FIX)
+      - CLICKHOUSE_HOST=http://clickhouse:8123
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=I11TestRoots
+
+      # MongoDB
+      - MONGO_URI=mongodb://mongodb:27017/fusion_suite?authSource=admin
+    command: ["node", "server.js"]
+    ports:
+      - "8320:8001"
+    networks:
+      - backend_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 7s
+        max_attempts: 20
+
+  sdk-service-crashes:
+    image: o3webmaster/sdk-service-crashes:swarm-mode
+    environment:
+      # Node
+      - NODE_ENV=development
+      - APP_SRC_PATH=/api/v1
+
+      # MariaDB (CRITICAL FIX)
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=I11TestRoots
+      - DB_NAME=fiv2_general
+
+      # Redis
+      - REDIS_HOST=redis_cache
+      # - REDIS_PORT=6379
+
+      - RMQHOST=rabbitmq
+      - RMQPORT=5672
+      - RMQUSERNAME=guest
+      - RMQPASSWORD=guest
+
+      # ClickHouse (CRITICAL FIX)
+      - CLICKHOUSE_HOST=http://clickhouse:8123
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=I11TestRoots
+
+      # MongoDB
+      - MONGO_URI=mongodb://mongodb:27017/fusion_suite?authSource=admin
+    command: ["node", "server.js"]
+    ports:
+      - "8002:8002"
+    networks:
+      - backend_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 7s
+        max_attempts: 20   
+
+  sdk-service-survey:
+    image: o3webmaster/sdk-service-survey:swarm-mode
+    environment:
+      # Node
+      - NODE_ENV=development
+      - APP_SRC_PATH=/api/v1
+
+      # MariaDB (CRITICAL FIX)
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=I11TestRoots
+      - DB_NAME=fiv2_general
+
+      # Redis
+      - REDIS_HOST=redis_cache
+      # - REDIS_PORT=6379
+
+      - RMQHOST=rabbitmq
+      - RMQPORT=5672
+      - RMQUSERNAME=guest
+      - RMQPASSWORD=guest
+
+      # ClickHouse (CRITICAL FIX)
+      - CLICKHOUSE_HOST=http://clickhouse:8123
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=I11TestRoots
+
+      # MongoDB
+      - MONGO_URI=mongodb://mongodb:27017/fusion_suite?authSource=admin
+    command: ["node", "server.js"]
+    ports:
+      - "8013:8013"
+    networks:
+      - backend_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 7s
+        max_attempts: 20      
+
+  sdk-service-submit-complaint:
+    image: o3webmaster/sdk-service-submit-complaint:swarm-mode
+    environment:
+      # Node
+      - NODE_ENV=development
+      - APP_SRC_PATH=/api/v1
+
+      # MariaDB (CRITICAL FIX)
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=I11TestRoots
+      - DB_NAME=fiv2_general
+
+      # Redis
+      - REDIS_HOST=redis_cache
+      # - REDIS_PORT=6379
+
+      - RMQHOST=rabbitmq
+      - RMQPORT=5672
+      - RMQUSERNAME=guest
+      - RMQPASSWORD=guest
+
+      # ClickHouse (CRITICAL FIX)
+      - CLICKHOUSE_HOST=http://clickhouse:8123
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=I11TestRoots
+
+      # MongoDB
+      - MONGO_URI=mongodb://mongodb:27017/fusion_suite?authSource=admin
+    command: ["node", "server.js"]
+    ports:
+      - "8010:8010"
+    networks:
+      - backend_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 7s
+        max_attempts: 20 
+
+  sdk-secure-link:
+    image: o3webmaster/sdk-secure-link:swarm-mode
+    environment:
+      # Node
+      - NODE_ENV=development
+      - APP_SRC_PATH=/api/v1
+
+      # MariaDB (CRITICAL FIX)
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=I11TestRoots
+      - DB_NAME=fiv2_general
+# rabbit
+      - RMQHOST=rabbitmq
+      - RMQPORT=5672
+      - RMQUSERNAME=guest
+      - RMQPASSWORD=guest
+
+      # Redis
+      - REDIS_HOST=redis_cache
+      # - REDIS_PORT=6379
+
+      # ClickHouse (CRITICAL FIX)
+      - CLICKHOUSE_HOST=http://clickhouse:8123
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=I11TestRoots
+
+      # MongoDB
+      - MONGO_URI=mongodb://mongodb:27017/fusion_suite?authSource=admin
+    command: ["node", "server.js"]
+    ports:
+      - "8041:8041"
+    networks:
+      - backend_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 7s
+        max_attempts: 20 
+
+  app-services:
+    image: o3webmaster/app-services:swarm-mode
+    environment:
+      # Node
+      - NODE_ENV=development
+      - APP_SRC_PATH=/api/v1
+
+      # MariaDB (CRITICAL FIX)
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=I11TestRoots
+      - DB_NAME=fiv2_general
+
+      # Redis
+      - REDIS_HOST=redis_cache
+      # - REDIS_PORT=6379
+
+      # ClickHouse (CRITICAL FIX)
+      - CLICKHOUSE_HOST=http://clickhouse:8123
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=I11TestRoots
+
+      # MongoDB
+      - MONGO_URI=mongodb://admin:dev@mongodb:27017/fusion_suite?authSource=admin
+    command: ["node", "server.js"]
+    ports:
+      - "8006:8006"
+    networks:
+      - backend_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 7s
+        max_attempts: 20
+
+  stripe-webhook:
+    image: o3webmaster/stripe-webhook:swarm-mode
+    environment:
+      # Node
+      - NODE_ENV=development
+      - APP_SRC_PATH=/api/v1
+
+      # MariaDB (CRITICAL FIX)
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=I11TestRoots
+      - DB_NAME=fiv2_general
+
+      # Redis
+      # - REDIS_HOST=prod_redis_cache      # if updated after the stack has been deployed, then update it in the docker-compose.yml file
+      - REDIS_HOST=redis_cache
+      # - REDIS_PORT=6379
+      
+
+      # ClickHouse (CRITICAL FIX)
+      - CLICKHOUSE_HOST=http://clickhouse:8123
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=I11TestRoots
+
+      # MongoDB
+      - MONGO_URI=mongodb://admin:dev@mongodb:27017/fusion_suite?authSource=admin
+    command: ["node", "server.js"]
+    ports:
+      - "8011:8011"
+    networks:
+      - backend_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 7s
+        max_attempts: 20
+
+  customer-complaint-management:
+    image: o3webmaster/customer-complaint-management:swarm-mode
+    environment:
+      # Node
+      - NODE_ENV=development
+      - APP_SRC_PATH=/api/v1
+
+      # MariaDB (CRITICAL FIX)
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=I11TestRoots
+      - DB_NAME=fiv2_general
+
+      - RMQHOST=rabbitmq
+      - RMQPORT=5672
+      - RMQUSERNAME=guest
+      - RMQPASSWORD=guest
+      # Redis
+      # - REDIS_HOST=prod_redis_cache      # if updated after the stack has been deployed, then update it in the docker-compose.yml file
+      - REDIS_HOST=redis_cache
+      # - REDIS_PORT=6379
+
+      # ClickHouse (CRITICAL FIX)
+      - CLICKHOUSE_HOST=http://clickhouse:8123
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=I11TestRoots
+
+      - MONGO_URI=mongodb://admin:dev@mongodb:27017/fusion_suite?authSource=admin
+    command: ["node", "server.js"]
+    ports:
+      - "8009:8009"
+    networks:
+      - backend_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 7s
+        max_attempts: 20
+
+  mailbox-service:
+    image: o3webmaster/mailbox-service:swarm-mode
+    environment:
+      # Node
+      - RMQHOST=rabbitmq
+      - RMQPORT=5672
+      - RMQUSERNAME=guest
+      - RMQPASSWORD=guest
+    command: ["node", "server.js"]
+    ports:
+      - "8020:8020"
+    networks:
+      - backend_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 7s
+        max_attempts: 20
+
+networks:
+  frontend_net:
+    driver: overlay
+    external: true
+  backend_net:
+    driver: overlay
+    external: true
